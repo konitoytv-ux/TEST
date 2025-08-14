@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>섹터 대시보드 (Netlify Functions · Node)</title>
+<link rel="preconnect" href="https://cdn.jsdelivr.net">
+<style>
+:root{color-scheme:light dark}
+body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Noto Sans,Apple SD Gothic Neo,sans-serif;margin:0;background:#0b0c0e;color:#e6e7ea}
+.wrap{max-width:1100px;margin:24px auto;padding:0 16px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px}
+.card{background:#111317;border:1px solid #2a2d33;border-radius:16px;padding:16px}
+select,a.btn{padding:10px 12px;border-radius:12px;border:1px solid #3a3d44;background:#14161a;color:#e6e7ea}
+.muted{opacity:.75;font-size:13px}
+canvas{width:100%!important;height:300px!important}
+header{display:flex;gap:12px;align-items:center;margin-bottom:16px;flex-wrap:wrap}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1 style="margin:0;font-size:20px">실시간 섹터 대시보드</h1>
+    <select id="sector"></select>
+    <a id="priceSrc" class="btn" target="_blank">원본(가격)</a>
+    <a id="mentionSrc" class="btn" target="_blank">원본(언급)</a>
+    <span id="status" class="muted"></span>
+  </header>
+
+  <div class="grid">
+    <div class="card">
+      <div><strong id="sectorName">섹터</strong></div>
+      <div class="muted" id="tickerInfo"></div>
+      <div class="muted" id="queryInfo"></div>
+      <div class="muted" id="perfInfo" style="margin-top:8px"></div>
+    </div>
+    <div class="card">
+      <div style="margin-bottom:6px">가격 (일봉 · 최근 120일)</div>
+      <canvas id="priceChart"></canvas>
+    </div>
+    <div class="card">
+      <div style="margin-bottom:6px">언급 빈도 (뉴스 · 30일)</div>
+      <canvas id="mentionChart"></canvas>
+    </div>
+  </div>
+
+  <footer class="muted" style="margin-top:12px">데이터: Stooq, GDELT · Netlify Functions(Node)로 CORS 우회.</footer>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script>
+const SECTORS={"모빌리티":{ticker:"driv.us",query:"mobility OR electric vehicle OR autonomous driving"},"로봇":{ticker:"botz.us",query:"robotics OR industrial robot"},"우주":{ticker:"arkx.us",query:"space OR satellite OR launch"},"에너지":{ticker:"xle.us",query:"energy sector OR oil OR gas"},"전력 인프라":{ticker:"pave.us",query:"grid OR transmission OR power infrastructure"},"이차 전지":{ticker:"lit.us",query:"battery OR lithium OR cathode"},"반도체":{ticker:"smh.us",query:"semiconductor OR chip OR foundry"},"전자 전기":{ticker:"xlk.us",query:"consumer electronics OR electronics industry"},"금융":{ticker:"xlf.us",query:"bank OR fintech OR financial services"},"게임":{ticker:"espo.us",query:"video game OR gaming industry OR esports"},"엔터테인먼트":{ticker:"xlc.us",query:"media OR streaming OR entertainment"},"조선":{ticker:"sea.us",query:"shipbuilding OR shipyard"},"운송":{ticker:"iyt.us",query:"logistics OR freight OR transportation"},"제약":{ticker:"xph.us",query:"pharma OR biotechnology OR drug"},"화장품":{ticker:"xlp.us",query:"beauty OR cosmetics"},"식음료":{ticker:"pbj.us",query:"food & beverage OR consumer staples"}};
+
+const sel=document.getElementById('sector');
+Object.keys(SECTORS).forEach(k=>{const o=document.createElement('option');o.value=k;o.textContent=k;sel.appendChild(o)});
+sel.value="반도체";
+
+const pctx=document.getElementById('priceChart'), mctx=document.getElementById('mentionChart');
+const pChart=new Chart(pctx,{type:'line',data:{labels:[],datasets:[{data:[],pointRadius:0,borderWidth:2,fill:false}]},options:{scales:{x:{display:false}},plugins:{legend:{display:false}}}});
+const mChart=new Chart(mctx,{type:'bar',data:{labels:[],datasets:[{data:[]}]},options:{scales:{x:{display:false}},plugins:{legend:{display:false}}}});
+
+function parseCSV(t){const L=t.trim().split(/\\r?\\n/);const R=L.slice(1).map(l=>l.split(','));return R.filter(r=>r.length>=6&&r[0]!=='').map(r=>({date:r[0],close:+r[4]})).filter(d=>!Number.isNaN(d.close));}
+function pct(a,b){return((b-a)/a)*100}
+
+async function load(){
+  const k=sel.value, meta=SECTORS[k];
+  document.getElementById('sectorName').textContent=`섹터: ${k}`;
+  document.getElementById('tickerInfo').textContent=`ETF 티커: ${meta.ticker.toUpperCase()}`;
+  document.getElementById('queryInfo').textContent=`Query: ${meta.query}`;
+  document.getElementById('status').textContent='불러오는 중…';
+  try{
+    const csv=await fetch('/.netlify/functions/price?ticker='+encodeURIComponent(meta.ticker)).then(r=>r.text());
+    const js =await fetch('/.netlify/functions/mentions?q='+encodeURIComponent(meta.query)).then(r=>r.json());
+    const prices=parseCSV(csv).slice(-120);
+    pChart.data.labels=prices.map(d=>d.date); pChart.data.datasets[0].data=prices.map(d=>d.close); pChart.update();
+    if(prices.length>=2){ const ch=pct(prices[0].close, prices[prices.length-1].close); document.getElementById('perfInfo').textContent=`120일 수익률: ${ch.toFixed(2)}%`; } else { document.getElementById('perfInfo').textContent=''; }
+    const m=(js?.timeline?.[0]?.data||[]).map(d=>({ts:d.date,count:+d.value}));
+    mChart.data.labels=m.map(d=>d.ts); mChart.data.datasets[0].data=m.map(d=>d.count); mChart.update();
+    document.getElementById('priceSrc').href='https://stooq.com/q/?s='+meta.ticker;
+    document.getElementById('mentionSrc').href='https://api.gdeltproject.org/api/v2/doc/doc?query='+encodeURIComponent(meta.query)+'&mode=TimelineVol&timespan=30d&format=json';
+    document.getElementById('status').textContent='';
+  }catch(e){ console.error(e); document.getElementById('status').textContent='불러오기 실패'; }
+}
+sel.addEventListener('change',load); load();
+</script>
+</body>
+</html>
